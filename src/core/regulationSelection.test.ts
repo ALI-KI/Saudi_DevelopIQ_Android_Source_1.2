@@ -49,6 +49,28 @@ describe('Regulation applicability and anti-shopping safeguards',()=>{
    expect(evidenceValid({...s,developmentUse:'Retail'},reg)).toBe(false);
    expect(evidenceValid(s,{...reg,version:'different'})).toBe(false);
    expect(evidenceValid({...s,regulationId:'arbitrary'},reg)).toBe(false);
+   // A new regulation may have a similar snapshot. Evidence is bound to the
+   // selected pack id, never only to the supplied pack object.
+   expect(evidenceValid(s,{...reg,id:'replacement'})).toBe(false);
+   // Explicit parcel metadata must match the captured evidence too.
+   expect(evidenceValid(s,reg,info)).toBe(true);
+   expect(evidenceValid(s,reg,{...info,plotNumber:'different'})).toBe(false);
+   expect(evidenceValid({...s,regulationEvidence:{...s.regulationEvidence!,regulationId:'arbitrary'}},reg)).toBe(false);
+ });
+ it('invalidates parcel evidence if a scenario switches regulations',()=>{
+   const verified=documented(reg);
+   expect(evidenceValid(verified,reg,info)).toBe(true);
+   expect(evidenceValid({...verified,regulationId:'new-regulation-id'},reg,info)).toBe(false);
+ });
+ it('invalidates parcel evidence when the plan, plot or use changes',()=>{
+   const verified=documented(reg);
+   expect(evidenceValid(verified,reg,{...info,planNumber:'999'})).toBe(false);
+   expect(evidenceValid(verified,reg,{...info,plotNumber:'999'})).toBe(false);
+   expect(evidenceValid(verified,reg,{...info,use:'Retail'})).toBe(false);
+ });
+ it('never treats a demo regulation as valid documentary evidence',()=>{
+   const demoDocumented=documented(demoRegulationPack);
+   expect(evidenceValid(demoDocumented,demoRegulationPack)).toBe(false);
  });
  it('never returns an endorsed proceed decision for undocumented or user-documented regulation',()=>{
    const result0=runScenario({...scenario,regulationId:reg.id},reg);

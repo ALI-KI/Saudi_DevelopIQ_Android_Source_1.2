@@ -1,6 +1,6 @@
 {
   "name": "saudi-developiq-riyadh",
-  "version": "1.2.0",
+  "version": "1.2.3",
   "description": "Saudi DevelopIQ – Android Edition. Offline real-estate development feasibility tool.",
   "main": "dist-electron/main/main.js",
   "author": "Mahmoud Elgamsy",

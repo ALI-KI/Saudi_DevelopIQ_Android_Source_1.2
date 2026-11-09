@@ -181,7 +181,7 @@ async function openPath(target: string): Promise<void> {
 }
 async function diagnostics(): Promise<DiagnosticsInfo> {
   return {
-    appVersion: '1.2.0', databasePath: `${ROOT}/appstate-A.json | appstate-B.json`,
+    appVersion: '1.2.3', databasePath: `${ROOT}/appstate-A.json | appstate-B.json`,
     userDataPath: 'Android private app storage',
     regulationPackVersion: 'user-reference/demo – check source in each study',
     reportOutputPath: `${ROOT}/exports`, logPath: 'Android Logcat (no cloud logs)', electronVersion: 'Not used (Capacitor Android)'

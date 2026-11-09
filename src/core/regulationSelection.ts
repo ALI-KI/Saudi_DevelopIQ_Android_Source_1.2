@@ -66,9 +66,23 @@ export function validateEvidence(reg: RegulationPack, info: ProjectInfo, scenari
   return errs;
 }
 
-export function evidenceValid(scenario: Scenario, reg: RegulationPack): boolean {
-  const e=scenario.regulationEvidence;
-  return Boolean(e && e.status==='USER_DOCUMENTED' && e.regulationId===reg.id && e.regulationVersion===reg.version && e.plotSignature===plotSignature(scenario.plot) && e.developmentUse===(scenario.developmentUse??'Residential Apartments') && e.documentReference.trim().length >= 7 && e.applicabilityReason.trim().length >= 15 && e.reviewer.trim());
+export function evidenceValid(scenario: Scenario, reg: RegulationPack, info?: ProjectInfo): boolean {
+  const e = scenario.regulationEvidence;
+  if (!e || e.status !== 'USER_DOCUMENTED') return false;
+  if (reg.verificationStatus === 'DEMO_ONLY') return false;
+  // Both the scenario's current selection AND the captured evidence must name
+  // the same regulation pack. Never reuse evidence after switching packs.
+  if (scenario.regulationId !== reg.id || e.regulationId !== reg.id) return false;
+  if (e.regulationVersion !== reg.version) return false;
+  if (e.plotSignature !== plotSignature(scenario.plot)) return false;
+  if (e.developmentUse !== (scenario.developmentUse ?? 'Residential Apartments')) return false;
+  if (!reg.applicableUses.includes(e.developmentUse)) return false;
+  // The UI has the parcel identity; verify it too so moving the study to
+  // another parcel cannot preserve the previous parcel's evidence.
+  if (info && (e.parcelKey !== parcelKey(info) || assessRegulation(reg, info, e.developmentUse).status === 'EXCLUDED')) return false;
+  return typeof e.documentReference === 'string' && e.documentReference.trim().length >= 7 &&
+    typeof e.applicabilityReason === 'string' && e.applicabilityReason.trim().length >= 15 &&
+    typeof e.reviewer === 'string' && Boolean(e.reviewer.trim());
 }
 
 export function isOfficiallyConfirmedForParcel(_scenario:Scenario,_reg:RegulationPack): boolean {
