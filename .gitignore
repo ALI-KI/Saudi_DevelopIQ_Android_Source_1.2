@@ -1,0 +1,17 @@
+node_modules/
+dist/
+dist-electron/
+release/
+qa-exports/
+qa-install/
+qa-screenshots/
+*.log
+.env
+.env.*
+!.env.example
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.keystore
+*.jks
