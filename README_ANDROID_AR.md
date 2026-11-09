@@ -80,3 +80,8 @@ cd android && ./gradlew assembleDebug
 ملفات المشاريع محلية؛ لا توجد مزامنة سحابية من التطبيق. GitHub Actions يبني **الكود** المرفوع فقط؛ لا ترفع نسخًا احتياطية حقيقية للمشاريع إلى المستودع. أصدِر نسخة احتياطية دورية قبل حذف التطبيق أو تغييره.
 
 مطوّر المشروع: Mahmoud Elgamsy — `mobd3on@gmail.com`.
+
+
+## تحديث 1.2.1: إصلاح Android SDK في GitHub Actions
+
+خطأ `Failed to find package 'tools'` ينتج عن خطوة `android-actions/setup-android@v3` التي تحاول تثبيت حزمة قديمة لم تعد متاحة. تم التحديث إلى `android-actions/setup-android@v4` مع `packages: 'platform-tools'`، دون تعديل كود التطبيق. ارفع ملف `.github/workflows/android-apk.yml` للمستودع، ثم افتح Actions واختر `Saudi DevelopIQ - Android APK` ثم Run workflow. لا يُعد الإصلاح ضمانًا لنجاح بقية خطوات البناء؛ يلزم مراجعة سجل التشغيل الجديد.
