@@ -116,8 +116,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
   },
   createProject: (draft) => {
     // New studies must establish their applicable regulation AFTER the plot is identified.
-    const regulation = undefined;
-    const scenario = makeScenario(regulation?.id ?? '', 'S01 Base Study', (draft?.use ?? 'Residential Apartments') as Scenario['developmentUse']);
+    const scenario = makeScenario('', 'S01 Base Study', (draft?.use ?? 'Residential Apartments') as Scenario['developmentUse']);
     scenario.plot = { ...structuredClone(defaultPlot), officialArea: 0, length: 0, width: 0, accuracy: 'Area Only', boundaries: defaultPlot.boundaries.map(b => ({ ...b, type: 'Other' as const, width: undefined, streetRole: undefined })) };
     const use = scenario.developmentUse;
     scenario.productMix = use === 'Residential + Retail' ? { ...scenario.productMix, residentialShare: 0.75, retailShare: 0.25, officeShare: 0 } :
@@ -141,7 +140,7 @@ export const useAppStore = create<AppStore>((set, get) => ({
       activeScenarioId: scenario.id,
       versions: [{ id: id('version'), label: 'V01 Initial Study', createdAt: new Date().toISOString() }],
       changeLog: [],
-      regulationSnapshots: regulation ? [regulation] : []
+      regulationSnapshots: []
     };
     set({ projects: [project, ...get().projects], activeProjectId: project.info.id, activeView: 'plot' });
     void get().persist().catch(() => undefined);
