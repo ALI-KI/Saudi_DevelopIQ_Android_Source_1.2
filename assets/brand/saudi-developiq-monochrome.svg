@@ -1,3 +1,8 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="DevelopIQ app icon">
-  <image href="developiq-app-icon.png" width="256" height="256" preserveAspectRatio="xMidYMid meet"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Saudi DevelopIQ">
+  <g fill="none" stroke="#0B3D33" stroke-width="22" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M286 116 H128 a12 12 0 0 0 -12 12 V384 a12 12 0 0 0 12 12 H384 a12 12 0 0 0 12 -12 V226"/>
+  </g>
+  <rect x="164" y="268" width="52" height="92" rx="6" fill="#0B3D33"/>
+  <rect x="236" y="204" width="52" height="156" rx="6" fill="#0B3D33"/>
+  <rect x="308" y="92" width="52" height="268" rx="6" fill="#0B3D33"/>
 </svg>

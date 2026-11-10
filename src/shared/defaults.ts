@@ -1,7 +1,7 @@
 import { AppSettings, CompanyProfile, FinancialInputs, PlotData, ProductMix } from './types';
 
 export const defaultSettings: AppSettings = {
-  language: 'bi',
+  language: 'ar',
   reportLanguage: 'bi',
   theme: 'system',
   appLockEnabled: false,
@@ -44,6 +44,15 @@ export const defaultFinancial: FinancialInputs = {
   sellableEfficiencyResidential: 0.82,
   sellableEfficiencyRetail: 0.88,
   sellableEfficiencyOffice: 0.78,
+  mode: 'SALE',
+  rentResidential: 450,
+  rentRetail: 1200,
+  rentOffice: 900,
+  occupancyPercent: 0.9,
+  opexPercent: 0.15,
+  capRate: 0.08,
+  rettPercent: 0,
+  constructionVatPercent: 0,
   marketingPercent: 0.015,
   salesCommissionPercent: 0.025,
   contingencyPercent: 0.06

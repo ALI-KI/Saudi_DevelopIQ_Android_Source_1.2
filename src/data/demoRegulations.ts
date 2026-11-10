@@ -88,6 +88,11 @@ export const demoRegulationPack: RegulationPack = {
   }
 };
 
+/** Bump when seed values change so stored copies of the seed packs are refreshed on load. */
+export const SEED_VERSION = '2026.11-amanah';
+const AMANAH_DOC = 'مطابق لوثيقة «نظام البناء» الصادرة من أمانة منطقة الرياض';
+const MIXED: RegulationPack['applicableUses'] = ['Residential Apartments', 'Residential + Retail', 'Retail', 'Retail + Office', 'Commercial', 'Office'];
+
 const userReference = (code: string, name: string, overrides: Partial<RegulationPack> = {}): RegulationPack => ({
   ...demoRegulationPack,
   id: `USER_REFERENCE_${code.replace(/[^A-Z0-9]+/gi, '_').toUpperCase()}`,
@@ -95,11 +100,11 @@ const userReference = (code: string, name: string, overrides: Partial<Regulation
   name: { ar: name, en: name },
   authority: { ar: 'مرجع مستخدم', en: 'User reference' },
   planningZone: 'USER_REFERENCE',
-  version: 'user-reference',
+  version: SEED_VERSION,
   effectiveDate: 'user-reference',
   verificationDate: 'user-reference',
   source: 'User supplied reference',
-  sourceReference: 'USER_REFERENCE - values must be verified by the user before reliance',
+  sourceReference: 'مرجع مدخل — لم يُطابق بوثيقة الأمانة بعد',
   verificationStatus: 'USER_REFERENCE',
   priority: 100,
   calculationReady: false,
@@ -134,21 +139,27 @@ const cov = (ground: number | null, first: number | null, typical: number | null
 const sw = (divisor: number, min?: number, max?: number) => ({ type: 'streetWidthDivisor' as const, divisor, min, max });
 
 export const userReferenceRegulationPacks: RegulationPack[] = [
-  userReference('S111', 'S111 | س111', {
+  userReference('S111', 'س 111 | فلل سكنية', {
     id: 'RIYADH-S111',
+    code: 'س 111',
     applicableUses: ['Residential Villas'],
-    maxFloors: { ...demoRegulationPack.maxFloors, value: 2, status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
-    roofAnnexPercent: { ...demoRegulationPack.roofAnnexPercent, value: 0.5, status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
-    coverage: { ...demoRegulationPack.coverage, value: cov(0.6, 0.6, null, null), status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
-    setbacks: { ...demoRegulationPack.setbacks, value: { front: sw(5, 2), right: 2, left: 2, rear: 2 }, status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
-    setbackProfiles: { mainStreet: sw(5, 2), secondaryStreet: sw(5, 2), neighbor: 2 },
-    far: { ...demoRegulationPack.far, value: null, status: 'USER_REFERENCE', source: 'Not defined in supplied reference' },
-    developmentDepth: { id: 's111-depth', label: { ar: 'عمق التطوير', en: 'Development Depth' }, value: null, status: 'USER_REFERENCE', source: 'Not defined in supplied reference', type: 'CALCULATION_RULE' },
-    ...calc(['Floors: Ground + First', 'Roof Annex 50% of First', 'Coverage 60%', 'Street setbacks width/5 min 2m', 'Neighbors 2m'], ['FAR', 'Parking', 'Development Depth'])
+    sourceReference: `${AMANAH_DOC} — مخطط 2143 قطعة 418 (أكتوبر 2025)`,
+    groundCoverageIncludesSetbackAnnexes: true,
+    maxFloors: { ...demoRegulationPack.maxFloors, value: 2, status: 'USER_REFERENCE_CALCULABLE', source: 'Amanah building-regulation document' },
+    roofAnnexPercent: { ...demoRegulationPack.roofAnnexPercent, value: 0.5, status: 'USER_REFERENCE_CALCULABLE', source: 'Amanah building-regulation document' },
+    coverage: { ...demoRegulationPack.coverage, value: cov(0.7, 0.65, null, null), status: 'USER_REFERENCE_CALCULABLE', source: 'Ground 70% incl. annexes in setbacks; first floor up to 65% with projection' },
+    setbacks: { ...demoRegulationPack.setbacks, value: { front: sw(5, 3), right: 2, left: 2, rear: 2 }, status: 'USER_REFERENCE_CALCULABLE', source: 'Ministry residential requirements' },
+    setbackProfiles: { mainStreet: sw(5, 3), secondaryStreet: sw(5, 2), neighbor: 2 },
+    far: { ...demoRegulationPack.far, value: 1.2, status: 'USER_REFERENCE_CALCULABLE', source: 'Amanah building-regulation document' },
+    floorAreaTypes: [{ floor: 'ground', countsTowardFAR: true }, { floor: 'first', countsTowardFAR: true }, { floor: 'roof annex', countsTowardFAR: false }],
+    notes: { ar: 'سكني لأسرة واحدة، أرضي + أول. الملاحق العلوية 50% من الدور الأول ولا تحسب ضمن معامل البناء، وارتدادها 2م من حد المبنى جهة الشوارع. القطع على الدائري مع شارع فرعي متعامد: ارتداد الفرعي خُمس بحد أدنى 4م.', en: 'Single-family residential, G+1. Roof annex 50% of first floor, excluded from FAR.' },
+    ...calc(['Floors: Ground + First', 'FAR 1.20', 'Ground coverage 70% incl. annexes', 'First floor max 65%', 'Roof annex 50% excluded from FAR', 'Front setback width/5 min 3m', 'Neighbors 2m'], ['Development Depth'])
   }),
-  userReference('M111', 'M111 | م111', {
+  userReference('M111', 'م 111 | سكني / تجاري / مكاتب', {
     id: 'RIYADH-M111',
-    applicableUses: ['Residential Apartments', 'Commercial', 'Office'],
+    code: 'م 111',
+    applicableUses: MIXED,
+    sourceReference: `${AMANAH_DOC} — مخطط 2938 قطعة 59 ومخطط 3114 قطعة 1711`,
     setbacks: {
       ...demoRegulationPack.setbacks,
       id: 'user-m111-setbacks',
@@ -159,15 +170,16 @@ export const userReferenceRegulationPacks: RegulationPack[] = [
     setbackProfiles: { mainStreet: sw(5, 2), secondaryStreet: sw(5, 2), neighbor: 2 },
     maxFloors: { ...demoRegulationPack.maxFloors, value: 2, status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
     roofAnnexPercent: { ...demoRegulationPack.roofAnnexPercent, value: 0.5, status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
-    coverage: { ...demoRegulationPack.coverage, id: 'user-m111-coverage', value: cov(0.6, 0.6, null, null), status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
+    coverage: { ...demoRegulationPack.coverage, id: 'user-m111-coverage', value: cov(0.6, 0.65, null, null), status: 'USER_REFERENCE_CALCULABLE', source: 'Coverage 60%; first floor up to 65% with projection' },
     far: { ...demoRegulationPack.far, id: 'user-m111-far', value: 1.2, status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
     floorAreaTypes: [{ floor: 'ground', countsTowardFAR: true }, { floor: 'first', countsTowardFAR: true }, { floor: 'roof annex', countsTowardFAR: false }],
     developmentDepth: { id: 'm111-commercial-depth', label: { ar: 'عمق الاستخدام التجاري', en: 'Commercial Development Depth' }, value: null, status: 'AUTHORITY_CONFIRMATION', source: 'User supplied reference', type: 'CALCULATION_RULE', notes: { ar: 'يجب مراجعة أمانة منطقة الرياض لتحديد عمق الاستخدام التجاري المسموح به حسب موقع الأرض.', en: 'Riyadh Municipality confirmation required for commercial depth by location.' } },
     ...calc(['Floors: Ground + First', 'Roof Annex 50% excluded from FAR', 'Coverage 60%', 'FAR 1.20', 'Street setbacks width/5 min 2m; 30m+ min 6m', 'Neighbors 2m'], ['Commercial Development Depth', 'Parking'])
   }),
-  userReference('M112', 'M112 | م112', {
+  userReference('M112', 'م 112', {
     id: 'RIYADH-M112',
-    applicableUses: ['Residential Apartments', 'Commercial', 'Office'],
+    code: 'م 112',
+    applicableUses: MIXED,
     maxFloors: { ...demoRegulationPack.maxFloors, value: 3, status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
     roofAnnexPercent: { ...demoRegulationPack.roofAnnexPercent, value: 0.5, status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
     setbacks: { ...demoRegulationPack.setbacks, id: 'user-m112-setbacks', value: { front: sw(5, 3), right: 2, left: 2, rear: 2 }, status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
@@ -177,9 +189,9 @@ export const userReferenceRegulationPacks: RegulationPack[] = [
     developmentDepth: { id: 'm112-depth', label: { ar: 'عمق التطوير', en: 'Development Depth' }, value: null, status: 'USER_REFERENCE', source: 'Not defined in supplied reference', type: 'CALCULATION_RULE' },
     ...calc(['Floors: Ground + 2 Upper Floors', 'Roof Annex 50%', 'Coverage 60%', 'Main setback width/5 min 3m', 'Secondary setback width/5 min 2m', 'Neighbors 2m'], ['FAR', 'Parking', 'Development Depth'])
   }),
-  userReference('M112 Central Spine Case', 'M112 - Central Spine Case', {
+  userReference('M112 Central Spine Case', 'م 112 — حالة العصب المركزي', {
     id: 'RIYADH-M112-CENTRAL-SPINE',
-    applicableUses: ['Residential Apartments', 'Commercial', 'Office'],
+    applicableUses: MIXED,
     maxFloors: { ...demoRegulationPack.maxFloors, value: 3, status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
     roofAnnexPercent: { ...demoRegulationPack.roofAnnexPercent, value: 0.5, status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
     coverage: { ...demoRegulationPack.coverage, value: cov(0.6, 0.6, 0.6, null), status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
@@ -188,7 +200,8 @@ export const userReferenceRegulationPacks: RegulationPack[] = [
     developmentZones: [{ name: 'Zone A', depth: 30, floors: 3, coverage: 0.6, notes: 'Central Spine rules where applicable' }, { name: 'Zone B', depth: null, floors: 2, coverage: 0.6, use: 'Residential Apartments' }],
     ...calc(['M112 base', 'Zone A first 30m', 'Zone B remaining depth Ground + First', 'Coverage 60%', 'Setbacks from M112'], ['FAR', 'Parking'])
   }),
-  userReference('S221', 'S221 | س221', {
+  userReference('S221', 'س 221', {
+    code: 'س 221',
     id: 'RIYADH-S221',
     applicableUses: ['Residential Apartments'],
     maxFloors: { ...demoRegulationPack.maxFloors, value: 2, status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
@@ -199,7 +212,8 @@ export const userReferenceRegulationPacks: RegulationPack[] = [
     developmentDepth: { id: 's221-depth', label: { ar: 'عمق التطوير', en: 'Development Depth' }, value: null, status: 'AUTHORITY_CONFIRMATION', source: 'Not defined numerically', type: 'CALCULATION_RULE' },
     ...calc(['Floors: Ground + First', 'Roof Annex 50%', 'Coverage 60%', 'Street setbacks width/5 min 2m', 'Neighbors 2m'], ['Development Depth', 'FAR', 'Parking'])
   }),
-  userReference('S231', 'S231 | س231', {
+  userReference('S231', 'س 231', {
+    code: 'س 231',
     id: 'RIYADH-S231',
     applicableUses: ['Residential Apartments'],
     maxFloors: { ...demoRegulationPack.maxFloors, value: 2, status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
@@ -209,8 +223,10 @@ export const userReferenceRegulationPacks: RegulationPack[] = [
     setbackProfiles: { mainStreet: 0, secondaryStreet: 0, neighbor: 0 },
     ...calc(['Floors: Ground + First', 'Roof Annex 50%', 'Coverage 100%', 'All setbacks 0m'], ['FAR', 'Parking', 'Development Depth'])
   }),
-  userReference('Developed Case 3', 'Developed Regulation - Case 3', {
+  userReference('Developed Case 3', 'النظام المطور حالة 3 | شوارع 30م و36م', {
     id: 'RIYADH-DEVELOPED-CASE-3',
+    code: 'النظام المطور حالة 3',
+    sourceReference: `${AMANAH_DOC} — مخطط 2938 قطعة 59 (نظام البناء المطور الصادر بقرار الهيئة لعام 1424هـ)`,
     applicableUses: ['Residential Apartments', 'Residential Villas'],
     maxFloors: { ...demoRegulationPack.maxFloors, value: 3, status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
     roofAnnexPercent: { ...demoRegulationPack.roofAnnexPercent, value: 0.5, status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
@@ -222,7 +238,7 @@ export const userReferenceRegulationPacks: RegulationPack[] = [
     notes: { ar: 'لا يوجد معامل بناء. ينطبق على شوارع 30م و36م حسب المرجع المزود، والاختيار يدوي.', en: 'NO_FAR. Developed regulation for 30m and 36m streets per supplied reference; selected manually.' },
     ...calc(['Main/Commercial Street 6m', 'Neighbors 2m', 'Secondary street width/5 min 3m max 6m', 'Front Zone depth 30m Ground + 2 Floors', 'Rear Zone Ground + First', 'Coverage Ground 60%', 'Repeated 75%', 'Roof Annex 50%', 'NO_FAR'], ['Parking'])
   }),
-  userReference('Developed Commercial Depth 30m', 'Developed Regulation - Commercial Depth 30m', {
+  userReference('Developed Commercial Depth 30m', 'النظام المطور — عمق تجاري 30م', {
     id: 'RIYADH-DEVELOPED-COMMERCIAL-DEPTH-30',
     applicableUses: ['Residential Apartments'],
     maxFloors: { ...demoRegulationPack.maxFloors, value: 3, status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
@@ -234,7 +250,7 @@ export const userReferenceRegulationPacks: RegulationPack[] = [
     developmentZones: [{ name: 'Front Zone', depth: 30, floors: 3, coverage: 0.75 }, { name: 'Remaining Depth', depth: null, floors: null, coverage: null, notes: 'Residential condition applies' }],
     ...calc(['Commercial Depth 30m', 'Front Zone Ground + 2 Floors', 'Roof Annex 50%', 'Coverage Ground 60%', 'Repeated 75%', 'Main 6m', 'Neighbors 2m', 'Secondary width/5 min 3m'], ['FAR', 'Parking', 'Rear setback'])
   }),
-  userReference('Main Activity Spine 30m', 'Main Activity Spine - Maximum 30m', {
+  userReference('Main Activity Spine 30m', 'عصب الأنشطة الرئيسي — عمق 30م', {
     id: 'RIYADH-MAIN-ACTIVITY-SPINE-30M',
     applicableUses: ['Residential Apartments'],
     maxFloors: { ...demoRegulationPack.maxFloors, value: 3, status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
@@ -246,9 +262,9 @@ export const userReferenceRegulationPacks: RegulationPack[] = [
     developmentZones: [{ name: 'Front Zone', depth: 30, floors: 3, coverage: 0.5, notes: 'King Salman Road referenced condition' }, { name: 'Rear Zone', depth: null, floors: 2, coverage: 0.5, use: 'Residential' }],
     ...calc(['Ground + 2 Floors', 'Coverage 50%', 'Front Zone max 30m', 'Rear Zone Ground + First', 'FAR 1.5 where applicable', 'Neighbors 3m', 'Secondary width/5 min 4m'], ['Main setback', 'Parking'])
   }),
-  userReference('Main Activity Spine Front', 'Main Activity Spine - Front Plots', {
+  userReference('Main Activity Spine Front', 'عصب الأنشطة الرئيسي — القطع الأمامية', {
     id: 'RIYADH-MAIN-ACTIVITY-SPINE-FRONT',
-    applicableUses: ['Residential Apartments', 'Commercial', 'Office'],
+    applicableUses: MIXED,
     maxFloors: { ...demoRegulationPack.maxFloors, value: 6, status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
     coverage: { ...demoRegulationPack.coverage, value: cov(0.4, 0.4, 0.4, null), status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
     setbacks: { ...demoRegulationPack.setbacks, value: { front: 6, right: 3, left: 3, rear: 3 }, status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
@@ -257,9 +273,9 @@ export const userReferenceRegulationPacks: RegulationPack[] = [
     developmentZones: [{ name: 'Front Development', depth: 50, floors: 6, coverage: 0.4 }, { name: 'Rear Development', depth: null, floors: 3, coverage: 0.4, use: 'Residential' }],
     ...calc(['Front Ground + 5 Floors', 'Front depth 50m', 'Rear max 3 residential floors', 'Coverage 40%', 'Main 6m', 'Neighbors 3m', 'Secondary width/5 min 3m'], ['FAR', 'Parking'])
   }),
-  userReference('Central Spine', 'Central Spine', {
+  userReference('Central Spine', 'العصب المركزي', {
     id: 'RIYADH-CENTRAL-SPINE',
-    applicableUses: ['Residential Apartments', 'Commercial', 'Office'],
+    applicableUses: MIXED,
     maxFloors: { ...demoRegulationPack.maxFloors, value: null, status: 'USER_REFERENCE_CALCULABLE', source: 'Unlimited height in supplied reference' },
     coverage: { ...demoRegulationPack.coverage, value: cov(0.35, 0.35, 0.35, null), status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
     setbacks: { ...demoRegulationPack.setbacks, value: { front: 6, right: 3, left: 3, rear: 3 }, status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
@@ -267,15 +283,35 @@ export const userReferenceRegulationPacks: RegulationPack[] = [
     notes: { ar: 'الارتفاع مطلق حسب المرجع. طريق الملك فهد 4م بدون مواقف عمودية و8م مع المواقف. شارع العليا 6م. شروط المواقف/الارتدادات الخاصة محفوظة كملاحظات عند عدم نمذجتها بالكامل.', en: 'Unlimited height per reference. King Fahd Road 4m without perpendicular parking and 8m with it. Olaya Street 6m.' },
     ...calc(['Unlimited height noted', 'Coverage 35%', 'Neighbors 3m', 'King Fahd 4m/8m', 'Olaya 6m', 'Secondary width/5 min 3m / 8m with perpendicular parking'], ['FAR', 'Development Depth', 'Parking Demand'])
   }),
-  userReference('Central Spine Commercial Depth 70m', 'Central Spine - Commercial Depth 70m', {
+  userReference('Central Spine Commercial Depth 70m', 'ش 3 | طريق الملك فهد — عمق 70م', {
     id: 'RIYADH-CENTRAL-SPINE-COMMERCIAL-DEPTH-70',
-    applicableUses: ['Residential Apartments', 'Commercial', 'Office'],
+    code: 'ش 3',
+    applicableUses: MIXED,
+    sourceReference: `${AMANAH_DOC} — مخطط 3114 قطعة 1569 (الجهة الغربية لطريق الملك فهد بين الدائري الشمالي وطريق الملك سلمان)`,
+    far: { ...demoRegulationPack.far, value: 3, status: 'USER_REFERENCE_CALCULABLE', source: 'Amanah building-regulation document' },
+    roofAnnexPercent: { ...demoRegulationPack.roofAnnexPercent, value: 0, status: 'USER_REFERENCE_CALCULABLE', source: 'Open height; no roof annex rule' },
+    notes: { ar: 'الارتفاع مفتوح ومعامل البناء 3. الارتداد من طريق الملك فهد 4م بدون مواقف و8م مع المواقف. يلزم مراجعة الهيئة الملكية وهيئة الطيران المدني قبل الرخصة.', en: 'Open height, FAR 3. King Fahd Road setback 4m without parking, 8m with parking.' },
     maxFloors: { ...demoRegulationPack.maxFloors, value: null, status: 'USER_REFERENCE_CALCULABLE', source: 'Unlimited height in supplied reference' },
     coverage: { ...demoRegulationPack.coverage, value: cov(0.35, 0.35, 0.35, null), status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
     setbacks: { ...demoRegulationPack.setbacks, value: { front: 6, right: 3, left: 3, rear: 6 }, status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference' },
-    setbackProfiles: { mainStreet: 6, kingFahdRoad: 4, secondaryStreet: sw(5, 3), neighbor: 3 },
+    setbackProfiles: { mainStreet: 6, kingFahdRoad: 4, secondaryStreet: sw(5, 3), neighbor: 3, rearNeighbor: 6 },
     developmentDepth: { id: 'central-spine-commercial-depth-70', label: { ar: 'عمق تجاري', en: 'Commercial Depth' }, value: 70, status: 'USER_REFERENCE_CALCULABLE', source: 'User supplied reference', type: 'CALCULATION_RULE' },
-    ...calc(['Unlimited height', 'Coverage 35%', 'Commercial Depth 70m', 'King Fahd 4m/8m', 'Intersecting Main Streets 6m', 'Neighbors 3m / rear 6m where applies', 'Secondary width/5 min 3m'], ['FAR', 'Parking Demand'])
+    ...calc(['Open height', 'FAR 3.0', 'Coverage 35%', 'Commercial Depth 70m', 'King Fahd 4m/8m', 'Intersecting Main Streets 6m', 'Neighbors 3m / rear 6m', 'Secondary width/5 min 3m'], [])
+  }),
+  userReference('King Abdullah Rear Plots', 'ضوابط القطع الخلفية المظاهرة لطريق الملك عبدالله', {
+    id: 'RIYADH-KING-ABDULLAH-REAR',
+    code: 'خلفية طريق الملك عبدالله',
+    applicableUses: ['Residential Apartments', 'Residential Villas'],
+    sourceReference: `${AMANAH_DOC} — مخطط 2143 قطعة 417 و418 (أكتوبر 2025)`,
+    maxFloors: { ...demoRegulationPack.maxFloors, value: 3, status: 'USER_REFERENCE_CALCULABLE', source: 'Amanah building-regulation document' },
+    roofAnnexPercent: { ...demoRegulationPack.roofAnnexPercent, value: 0.5, status: 'USER_REFERENCE_CALCULABLE', source: 'Amanah building-regulation document' },
+    coverage: { ...demoRegulationPack.coverage, value: cov(0.5, 0.5, 0.5, null), status: 'USER_REFERENCE_CALCULABLE', source: 'Amanah building-regulation document' },
+    far: { ...demoRegulationPack.far, value: 1.5, status: 'USER_REFERENCE_CALCULABLE', source: 'Amanah building-regulation document' },
+    setbacks: { ...demoRegulationPack.setbacks, value: { front: sw(5, 3), right: 2, left: 2, rear: 2 }, status: 'USER_REFERENCE_CALCULABLE', source: 'Amanah building-regulation document' },
+    setbackProfiles: { mainStreet: sw(5, 3), secondaryStreet: sw(5, 3), neighbor: 2 },
+    floorAreaTypes: [{ floor: 'ground', countsTowardFAR: true }, { floor: 'first', countsTowardFAR: true }, { floor: 'typical', countsTowardFAR: true }, { floor: 'roof annex', countsTowardFAR: false }],
+    notes: { ar: 'شقق / دبلكس / فلل، أرضي + دورين. الملاحق العلوية 50% من الدور الأخير في الجزء الخلفي من المبنى ولا تحسب ضمن معامل البناء.', en: 'Apartments / duplex / villas, G+2. Roof annex 50% of last floor at the rear, excluded from FAR.' },
+    ...calc(['Ground + 2 Floors', 'FAR 1.5', 'Coverage 50%', 'Street setback width/5 min 3m', 'Side 2m', 'Rear 2m', 'Roof annex 50% excluded from FAR'], [])
   }),
   userReference('SB-T3.2', 'SB-T3.2', {
     id: 'RIYADH-SB-T3-2',

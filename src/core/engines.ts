@@ -9,9 +9,10 @@ import {
   ProjectUse,
   RegulationPack,
   Scenario,
-  ScenarioResult
+  ScenarioResult,
+  StreetParkingSide
 } from '../shared/types';
-import { evidenceValid, isOfficiallyConfirmedForParcel } from './regulationSelection';
+import { regulationConfidence } from './regulationSelection';
 
 const round = (value: number, decimals = 2) => Number.isFinite(value) ? Number(value.toFixed(decimals)) : 0;
 const sideWidth = (scenario: Scenario, side: 'front' | 'right' | 'left' | 'rear') => scenario.plot.boundaries.find((b) => b.side === side)?.width ?? 0;
@@ -21,11 +22,21 @@ const overrideNumber = (scenario: Scenario, field: string) => {
   const value = Number(override.usedValue);
   return Number.isFinite(value) ? value : null;
 };
+/** Plot dimensions with a safe fallback: a missing or zero side is derived from the area. */
+export const plotDimensions = (plot: Scenario['plot']) => {
+  const area = plot.officialArea || 0;
+  let length = plot.length && plot.length > 0 ? plot.length : 0;
+  let width = plot.width && plot.width > 0 ? plot.width : 0;
+  if (!length && !width) { length = Math.sqrt(area); width = Math.sqrt(area); }
+  else if (!length) length = area / width;
+  else if (!width) width = area / length;
+  return { length, width };
+};
 const profileRule = (scenario: Scenario, regulation: RegulationPack, side: 'front' | 'right' | 'left' | 'rear') => {
   const boundary = scenario.plot.boundaries.find((item) => item.side === side);
   const profiles = regulation.setbackProfiles;
   if (!boundary || !profiles) return undefined;
-  if (boundary.type === 'Neighbor') return profiles.neighbor;
+  if (boundary.type === 'Neighbor') return side === 'rear' ? profiles.rearNeighbor ?? profiles.neighbor : profiles.neighbor;
   if (boundary.type !== 'Street') return undefined;
   if (boundary.streetRole === 'kingFahd') return profiles.kingFahdRoad ?? profiles.mainStreet;
   if (boundary.streetRole === 'olaya') return profiles.olayaStreet ?? profiles.mainStreet;
@@ -82,11 +93,12 @@ export const calculateEnvelope = (scenario: Scenario, regulation: RegulationPack
     left: setbackValue(scenario, regulation, 'left'),
     rear: setbackValue(scenario, regulation, 'rear')
   };
-  const plotLength = plot.length ?? Math.sqrt(plotArea);
-  const plotWidth = plot.width ?? Math.sqrt(plotArea);
+  const { length: plotLength, width: plotWidth } = plotDimensions(plot);
   const missingRules: string[] = [];
+  const notes: string[] = [];
   (['front', 'right', 'left', 'rear'] as const).forEach((side) => { if (setbacks[side] === null) missingRules.push(`${side} setback not defined`); });
-  const buildableLength = Math.max(0, plotLength - (setbacks.front ?? 0) - (setbacks.rear ?? 0));
+  const frontSetback = setbacks.front ?? 0;
+  const rearSetback = setbacks.rear ?? 0;
   const buildableWidth = Math.max(0, plotWidth - (setbacks.left ?? 0) - (setbacks.right ?? 0));
   const coverage = {
     ground: regulation.coverage.value.ground ?? overrideNumber(scenario, 'coverage.ground'),
@@ -94,38 +106,73 @@ export const calculateEnvelope = (scenario: Scenario, regulation: RegulationPack
     typical: regulation.coverage.value.typical ?? overrideNumber(scenario, 'coverage.typical'),
     roof: regulation.coverage.value.roof ?? overrideNumber(scenario, 'coverage.roof')
   };
-  const depth = regulation.developmentDepth?.value ?? overrideNumber(scenario, 'developmentDepth');
-  const appliesSingleDepthCap = Boolean(depth && !hasOpenRearZone(regulation));
-  const effectiveBuildableLength = appliesSingleDepthCap ? Math.min(buildableLength, depth ?? buildableLength) : buildableLength;
-  const effectiveGeometricFootprint = round(effectiveBuildableLength * buildableWidth);
-  const coverageLimit = coverage.ground === null ? effectiveGeometricFootprint : round(plotArea * coverage.ground);
   const rawNoFar = regulation.far.source === 'NO_FAR';
-  const maxFloorsValue = regulation.maxFloors.value ?? overrideNumber(scenario, 'maxFloors');
+  const manualFarRaw = overrideNumber(scenario, 'far');
+  // A cleared or zero manual field means "no override", never "zero building area".
+  const manualFar = manualFarRaw !== null && manualFarRaw > 0 ? manualFarRaw : null;
+  const noFar = rawNoFar && manualFar === null;
+  let maxFloorsValue = regulation.maxFloors.value ?? overrideNumber(scenario, 'maxFloors');
+  const explicitFar = manualFar ?? regulation.far.value;
+  if (maxFloorsValue === null && explicitFar !== null && explicitFar > 0) {
+    // Open height: the FAR is what limits the building, so the floor count follows from it.
+    const typicalCoverage = coverage.typical ?? coverage.first ?? coverage.ground;
+    if (typicalCoverage && typicalCoverage > 0) {
+      maxFloorsValue = Math.min(60, Math.ceil(explicitFar / typicalCoverage));
+      notes.push(`Open height: ${maxFloorsValue} floors estimated from FAR / coverage — الارتفاع مفتوح: عدد الأدوار مقدّر من المعامل ÷ التغطية`);
+    }
+  }
   if (maxFloorsValue === null) missingRules.push('Maximum floors not defined');
   const maxFloors = Math.max(1, maxFloorsValue ?? 1);
-  const manualFar = overrideNumber(scenario, 'far');
-  const noFar = rawNoFar && manualFar === null;
-  const derivedFar = rawNoFar || regulation.far.value !== null || manualFar !== null ? null : deriveFarFromFloorRules(regulation, scenario, maxFloorsValue, coverage);
-  const farValue = noFar ? null : regulation.far.value ?? manualFar ?? derivedFar?.value ?? null;
-  const farSource: FarSourceType = noFar ? 'NO_FAR' : regulation.far.value !== null ? 'EXPLICIT_REGULATION' : manualFar !== null ? 'USER_OVERRIDE' : derivedFar ? 'DERIVED_FROM_FLOOR_RULES' : 'NOT_DEFINED';
+
+  // Depth bands measured from the front property line. Each band has its own floor limit.
+  const depthCap = regulation.developmentDepth?.value ?? overrideNumber(scenario, 'developmentDepth');
+  const bands: { from: number; to: number; floors: number }[] = [];
+  const zones = regulation.developmentZones ?? [];
+  if (zones.length) {
+    let cursor = 0;
+    for (const zone of zones) {
+      const to = zone.depth === null ? plotLength : Math.min(plotLength, cursor + zone.depth);
+      if (zone.floors === null && to > cursor) notes.push(`${zone.name}: governed by another regulation and not counted — باقي العمق يخضع لنظام آخر وغير محسوب`);
+      if (to > cursor) bands.push({ from: cursor, to, floors: Math.min(maxFloors, zone.floors ?? 0) });
+      cursor = to;
+    }
+  } else {
+    bands.push({ from: 0, to: depthCap ? Math.min(plotLength, depthCap) : plotLength, floors: maxFloors });
+  }
+  const buildFrom = frontSetback;
+  const buildTo = Math.max(buildFrom, plotLength - rearSetback);
+  const overlap = (band: { from: number; to: number }) => Math.max(0, Math.min(band.to, buildTo) - Math.max(band.from, buildFrom));
+  const activeBands = (index: number) => bands.filter((band) => band.floors > index);
+  const geometryAt = (index: number) => round(activeBands(index).reduce((sum, band) => sum + overlap(band), 0) * buildableWidth);
+  const landShareAt = (index: number) => plotLength > 0 ? Math.min(1, activeBands(index).reduce((sum, band) => sum + (band.to - band.from), 0) / plotLength) : 0;
+  const floorCount = Math.max(1, Math.min(maxFloors, Math.max(0, ...bands.map((band) => band.floors))));
+
+  const effectiveGeometricFootprint = geometryAt(0);
+  const coverageLimit = coverage.ground === null ? effectiveGeometricFootprint : round(plotArea * coverage.ground * landShareAt(0));
+  const derivedFar = rawNoFar || explicitFar !== null ? null : deriveFarFromFloorRules(regulation, scenario, maxFloorsValue, coverage);
+  const farValue = noFar ? null : explicitFar ?? derivedFar?.value ?? null;
+  const farSource: FarSourceType = noFar ? 'NO_FAR' : manualFar !== null ? 'USER_OVERRIDE' : regulation.far.value !== null ? 'EXPLICIT_REGULATION' : derivedFar ? 'DERIVED_FROM_FLOOR_RULES' : 'NOT_DEFINED';
   if (farValue === null && !noFar) missingRules.push('FAR not defined');
   const permittedGfa = farValue ? round(plotArea * farValue) : 0;
   const farHowCalculated = farSource === 'DERIVED_FROM_FLOOR_RULES' ? derivedFar?.howCalculated ?? '' : farSource === 'EXPLICIT_REGULATION' ? `Explicit FAR from regulation pack: ${farValue}` : farSource === 'USER_OVERRIDE' ? `Manual FAR override: ${farValue}` : farSource === 'NO_FAR' ? 'لا يوجد معامل بناء / NO_FAR' : 'Not Defined';
-  const floorKeys = Array.from({ length: maxFloors }, (_, i) => i === 0 ? 'ground' : i === 1 ? 'first' : `typical ${i - 1}`);
+  const floorKeys = Array.from({ length: floorCount }, (_, i) => i === 0 ? 'ground' : i === 1 ? 'first' : `typical ${i - 1}`);
   let farRemaining = farValue === null ? Number.POSITIVE_INFINITY : permittedGfa;
   const regulatoryViolations: string[] = [];
   const floorAreas = floorKeys.map((floor, index) => {
     const cov = index === 0 ? coverage.ground : index === 1 ? coverage.first : coverage.typical;
     if (cov === null) missingRules.push(`${floor} coverage not defined`);
-    const covLimit = cov === null ? effectiveGeometricFootprint : round(plotArea * cov);
+    const geometry = geometryAt(index);
+    const covLimit = cov === null ? geometry : round(plotArea * cov * landShareAt(index));
+    // Villa rule: ground coverage already includes annexes built inside the setbacks.
+    const geometryLimit = index === 0 && regulation.groundCoverageIncludesSetbackAnnexes && cov !== null ? covLimit : geometry;
     const farBudget = !noFar && countsTowardFar(regulation, floor) ? farRemaining : Number.POSITIVE_INFINITY;
-    const finalAllowedArea = round(Math.min(effectiveGeometricFootprint, covLimit, farBudget));
+    const finalAllowedArea = round(Math.min(geometryLimit, covLimit, farBudget));
     if (countsTowardFar(regulation, floor)) farRemaining = Math.max(0, farRemaining - finalAllowedArea);
     return {
       floor,
       coverageLimit: covLimit,
-      geometryLimit: effectiveGeometricFootprint,
-      zoneLimit: effectiveGeometricFootprint,
+      geometryLimit,
+      zoneLimit: geometry,
       farLimit: Number.isFinite(farBudget) ? round(farBudget) : finalAllowedArea,
       finalAllowedArea
     };
@@ -134,7 +181,14 @@ export const calculateEnvelope = (scenario: Scenario, regulation: RegulationPack
   const roofAnnexPercent = regulation.roofAnnexPercent.value ?? overrideNumber(scenario, 'roofAnnexPercent');
   if (roofAnnexPercent === null) missingRules.push('Roof annex percent not defined');
   const roofCoverageLimit = coverage.roof === null ? Number.POSITIVE_INFINITY : plotArea * coverage.roof;
-  const roofAnnexArea = roofAnnexPercent === null ? 0 : round(Math.min(roofCoverageLimit, (floorAreas.at(-1)?.finalAllowedArea ?? 0) * roofAnnexPercent, !noFar && roofCountsTowardFar ? farRemaining : Number.POSITIVE_INFINITY));
+  // The annex sits on the top floor of each depth band (front G+2 and rear G+1 each get their own).
+  const roofBase = bands.reduce((sum, band) => {
+    const top = Math.min(band.floors, floorAreas.length) - 1;
+    if (top < 0) return sum;
+    const activeDepth = activeBands(top).reduce((total, item) => total + overlap(item), 0);
+    return activeDepth > 0 ? sum + floorAreas[top].finalAllowedArea * (overlap(band) / activeDepth) : sum;
+  }, 0);
+  const roofAnnexArea = roofAnnexPercent === null ? 0 : round(Math.min(roofCoverageLimit, roofBase * roofAnnexPercent, !noFar && roofCountsTowardFar ? farRemaining : Number.POSITIVE_INFINITY));
   if (roofAnnexArea > 0) {
     floorAreas.push({
       floor: 'roof annex',
@@ -153,14 +207,13 @@ export const calculateEnvelope = (scenario: Scenario, regulation: RegulationPack
   const constraints = [
     { key: 'Geometry', value: effectiveGeometricFootprint },
     { key: 'Coverage', value: coverageLimit },
-    { key: 'FAR', value: noFar || !permittedGfa ? Number.POSITIVE_INFINITY : permittedGfa / Math.max(1, maxFloors) }
+    { key: 'FAR', value: noFar || !permittedGfa ? Number.POSITIVE_INFINITY : permittedGfa / Math.max(1, floorCount) }
   ].sort((a, b) => a.value - b.value);
-  const warnings = [];
+  const warnings: string[] = [];
   if (regulation.verificationStatus === 'DEMO_ONLY') warnings.push('Demo data - not regulatory / بيانات تجريبية - ليست اشتراطات رسمية');
-  if (regulation.verificationStatus === 'USER_REFERENCE') warnings.push('USER_REFERENCE regulation - verify source before reliance');
-  if (plot.accuracy === 'Area Only') warnings.push('Setbacks and buildable envelope cannot be accurately verified without plot dimensions');
-  if (areaDifference && Math.abs(areaDifference) > 1) warnings.push('Difference between calculated and official plot area');
-  warnings.push(...Array.from(new Set(missingRules)));
+  if (plot.accuracy === 'Area Only' || !(plot.length && plot.width)) warnings.push('Plot dimensions missing: envelope assumes a square plot / الأبعاد غير مدخلة: الحساب يفترض أرضًا مربعة');
+  if (areaDifference && Math.abs(areaDifference) > 1) warnings.push('Difference between calculated and official plot area / فرق بين المساحة المحسوبة ومساحة الصك');
+  warnings.push(...notes, ...Array.from(new Set(missingRules)));
   return {
     calculatedArea,
     areaDifference: areaDifference ? round(areaDifference) : undefined,
@@ -179,11 +232,14 @@ export const calculateEnvelope = (scenario: Scenario, regulation: RegulationPack
     farHowCalculated,
     floorAreas,
     controllingConstraint: constraints[0]?.key ?? 'Regulation',
-    warnings
-    ,setbacks,
+    warnings,
+    setbacks,
     regulatoryViolations
   };
 };
+
+const basementPlate = (scenario: Scenario, footprint: number) =>
+  scenario.basementCoverage && scenario.basementCoverage > 0 ? round(scenario.plot.officialArea * Math.min(1, scenario.basementCoverage)) : footprint;
 
 export const calculateOutputs = (scenario: Scenario, envelope: DevelopmentEnvelope): DevelopmentOutputs => {
   const mix = scenario.productMix;
@@ -196,9 +252,7 @@ export const calculateOutputs = (scenario: Scenario, envelope: DevelopmentEnvelo
   const sellableResidential = round(residentialGfa * scenario.financial.sellableEfficiencyResidential);
   const sellableRetail = round(retailGfa * scenario.financial.sellableEfficiencyRetail);
   const sellableOffice = round(officeGfa * scenario.financial.sellableEfficiencyOffice);
-  const suggestedUnits = scenario.plot.officialArea && scenario.regulationId && mix.averageUnitArea > 0
-    ? Math.floor(sellableResidential / mix.averageUnitArea)
-    : 0;
+  const suggestedUnits = scenario.plot.officialArea && mix.averageUnitArea > 0 ? Math.floor(sellableResidential / mix.averageUnitArea) : 0;
   const suggestedVillas = Math.floor(scenario.plot.officialArea / Math.max(1, mix.averageVillaPlotArea));
   const units = Math.max(0, Math.floor(overrideNumber(scenario, 'units') ?? suggestedUnits));
   const villas = Math.max(0, Math.floor(overrideNumber(scenario, 'villas') ?? suggestedVillas));
@@ -210,72 +264,119 @@ export const calculateOutputs = (scenario: Scenario, envelope: DevelopmentEnvelo
     roofAnnexArea: envelope.floorAreas.find((f) => f.floor === 'roof annex')?.finalAllowedArea ?? 0,
     aboveGroundBuiltUpArea: gfa,
     gfa,
-    basementArea: round(envelope.finalFootprint * scenario.basementCount),
+    basementArea: round(basementPlate(scenario, envelope.finalFootprint) * Math.max(0, scenario.basementCount)),
     sellableResidential,
     sellableRetail,
     sellableOffice,
     units,
-    villas
+    villas,
+    residentialGfa: round(residentialGfa),
+    retailGfa: round(retailGfa),
+    officeGfa: round(officeGfa)
   };
+};
+
+/** Stall 2.8 m x 5.5 m. Streets 15-25 m take perpendicular stalls; 30 m and wider take 45-degree stalls. */
+export const STALL_WIDTH = 2.8;
+export const STALL_LENGTH = 5.5;
+export const LARGE_UNIT_AREA = 180;
+const ANGLED_STALL_ALONG_CURB = round(STALL_WIDTH / Math.sin(Math.PI / 4), 2);
+/** Ministry residential requirements (2024): one space per 45 m2 of shops or offices. Used when the pack has no rule. */
+const DEFAULT_COMMERCIAL_SQM_PER_SPACE = 45;
+
+export const streetParking = (scenario: Scenario): StreetParkingSide[] => {
+  const { length, width } = plotDimensions(scenario.plot);
+  return scenario.plot.boundaries
+    .filter((boundary) => boundary.type === 'Street' && (boundary.width ?? 0) > 0)
+    .map((boundary) => {
+      const streetWidth = boundary.width ?? 0;
+      const frontage = boundary.side === 'front' || boundary.side === 'rear' ? width : length;
+      const layout: StreetParkingSide['layout'] = streetWidth >= 30 ? 'ANGLED_45' : streetWidth >= 15 ? 'PERPENDICULAR' : 'NOT_ALLOWED';
+      const stallAlongCurb = layout === 'ANGLED_45' ? ANGLED_STALL_ALONG_CURB : STALL_WIDTH;
+      const spaces = layout === 'NOT_ALLOWED' ? 0 : Math.max(0, Math.floor(frontage / stallAlongCurb));
+      return { side: boundary.side, streetWidth, frontage: round(frontage), layout, stallAlongCurb, spaces };
+    });
 };
 
 export const calculateParking = (scenario: Scenario, regulation: RegulationPack, outputs: DevelopmentOutputs): ParkingResult => {
   const rules = regulation.parking.value;
   const efficiency = scenario.parkingEfficiencySqmPerSpace ?? 30;
-  const spacesPerBasement = Math.max(1, Math.floor(outputs.footprint / Math.max(1, efficiency)));
-  const frontBoundary = scenario.plot.boundaries.find((boundary) => boundary.side === 'front' && boundary.type === 'Street');
-  // Plot width denotes the street-facing frontage in the rectangular-plot input model.
-  const frontage = scenario.plot.width ?? 0;
-  const parkingLayout = !frontBoundary?.width ? 'NOT_APPLICABLE' : frontBoundary.width >= 30 ? 'ANGLED_45' : 'PERPENDICULAR';
-  const autoSurfaceParking = parkingLayout === 'NOT_APPLICABLE' ? 0 : Math.max(0, Math.floor(frontage / 2.8));
+  const plate = basementPlate(scenario, outputs.footprint);
+  const spacesPerBasement = Math.max(0, Math.floor(plate / Math.max(1, efficiency)));
+  const streetSides = streetParking(scenario);
+  const frontSide = streetSides.find((side) => side.side === 'front') ?? streetSides[0];
+  const parkingLayout: ParkingResult['parkingLayout'] = !frontSide || frontSide.layout === 'NOT_ALLOWED' ? 'NOT_APPLICABLE' : frontSide.layout;
+  const autoSurfaceParking = Math.max(0, streetSides.reduce((sum, side) => sum + side.spaces, 0) - Math.max(0, Math.floor(scenario.streetParkingLostSpaces ?? 0)));
   const developmentUse = scenario.developmentUse;
-  const residentialApartmentsRule = rules.find((r) => r.use === 'Residential Apartments');
-  const residentialVillasRule = rules.find((r) => r.use === 'Residential Villas');
-  const retailRule = rules.find((r) => r.use === 'Retail');
-  const officeRule = rules.find((r) => r.use === 'Office');
-  const manualRequiredSpaces = overrideNumber(scenario, 'parking.requiredSpaces');
-  const demandForUse = (use: ProjectUse | 'Retail') => {
-    if (use === 'Residential Villas') return residentialVillasRule ? outputs.villas * residentialVillasRule.ratio : null;
-    if (use === 'Residential Apartments') return residentialApartmentsRule ? outputs.units * residentialApartmentsRule.ratio : null;
-    if (use === 'Retail' || use === 'Commercial') return retailRule ? (outputs.sellableRetail / 100) * retailRule.ratio : null;
-    if (use === 'Office') return officeRule ? (outputs.sellableOffice / 100) * officeRule.ratio : null;
-    if (use === 'Residential + Retail') {
-      const residential = residentialApartmentsRule ? outputs.units * residentialApartmentsRule.ratio : null;
-      const retail = retailRule ? (outputs.sellableRetail / 100) * retailRule.ratio : null;
-      return residential === null || retail === null ? null : residential + retail;
-    }
-    if (use === 'Retail + Office') {
-      const retail = retailRule ? (outputs.sellableRetail / 100) * retailRule.ratio : null;
-      const office = officeRule ? (outputs.sellableOffice / 100) * officeRule.ratio : null;
-      return retail === null || office === null ? null : retail + office;
-    }
-    return null;
+  const rule = (use: string) => rules.find((r) => r.use === use);
+  const mix = scenario.productMix;
+  const largeShare = Math.min(1, Math.max(0, mix.largeUnitShare ?? (mix.averageUnitArea > LARGE_UNIT_AREA ? 1 : 0)));
+  const demandBreakdown: NonNullable<ParkingResult['demandBreakdown']> = [];
+  const apartments = () => {
+    const packRule = rule('Residential Apartments');
+    const spaces = packRule ? outputs.units * packRule.ratio : outputs.units * (1 + largeShare);
+    demandBreakdown.push({ label: { ar: packRule ? `شقق: ${packRule.ratio} موقف لكل وحدة` : 'شقق: موقف للشقة حتى 180م² وموقفان للأكبر', en: 'Apartments' }, spaces: Math.ceil(spaces) });
+    return spaces;
   };
-  const calculatedDemand = developmentUse ? demandForUse(developmentUse) : null;
+  const villas = () => {
+    const packRule = rule('Residential Villas');
+    const spaces = outputs.villas * (packRule?.ratio ?? 1);
+    demandBreakdown.push({ label: { ar: 'فلل: موقف داخل حدود كل فيلا', en: 'Villas (inside each plot)' }, spaces: Math.ceil(spaces) });
+    return spaces;
+  };
+  const commercial = (use: 'Retail' | 'Office', area: number) => {
+    if (area <= 0) return 0;
+    const packRule = rule(use);
+    const spaces = packRule ? (area / 100) * packRule.ratio : area / DEFAULT_COMMERCIAL_SQM_PER_SPACE;
+    demandBreakdown.push({ label: { ar: `${use === 'Retail' ? 'تجاري' : 'مكاتب'}: ${packRule ? `${packRule.ratio} موقف لكل 100م²` : 'موقف لكل 45م²'}`, en: use }, spaces: Math.ceil(spaces) });
+    return spaces;
+  };
+  const retailArea = rule('Retail') ? outputs.sellableRetail : outputs.retailGfa ?? outputs.sellableRetail;
+  const officeArea = rule('Office') ? outputs.sellableOffice : outputs.officeGfa ?? outputs.sellableOffice;
+  let calculatedDemand: number | null = null;
+  let internalSpaces = 0;
+  if (developmentUse === 'Residential Villas') { calculatedDemand = villas(); internalSpaces = Math.ceil(calculatedDemand); }
+  else if (developmentUse === 'Residential Apartments') calculatedDemand = apartments();
+  else if (developmentUse === 'Retail' || developmentUse === 'Commercial') calculatedDemand = commercial('Retail', retailArea);
+  else if (developmentUse === 'Office') calculatedDemand = commercial('Office', officeArea);
+  else if (developmentUse === 'Residential + Retail') calculatedDemand = Math.ceil(apartments()) + Math.ceil(commercial('Retail', retailArea));
+  else if (developmentUse === 'Retail + Office') calculatedDemand = Math.ceil(commercial('Retail', retailArea)) + Math.ceil(commercial('Office', officeArea));
+  const manualRequiredSpaces = overrideNumber(scenario, 'parking.requiredSpaces');
+  const canCalculateParking = manualRequiredSpaces !== null || calculatedDemand !== null;
   const requiredSpaces = manualRequiredSpaces ?? (calculatedDemand === null ? 0 : Math.ceil(calculatedDemand));
-  const hasParkingRule = rules.length > 0 || manualRequiredSpaces !== null;
-  const canCalculateParking = manualRequiredSpaces !== null || Boolean(developmentUse && calculatedDemand !== null);
-  // Street parking estimate is NOT an entitlement. Count it only after explicit user confirmation.
-  const surfaceParking = Math.max(0, scenario.surfaceParking ?? 0);
-  const basementCountRequired = Math.ceil(Math.max(0, requiredSpaces - surfaceParking) / spacesPerBasement);
-  const providedSpaces = surfaceParking + scenario.basementCount * spacesPerBasement;
+  // Street spaces come first; a confirmed manual count replaces the estimate.
+  const surfaceParking = Math.max(0, scenario.surfaceParking ?? autoSurfaceParking) + internalSpaces;
+  const shortfall = Math.max(0, requiredSpaces - surfaceParking);
+  const basementCountRequired = shortfall === 0 ? 0 : spacesPerBasement > 0 ? Math.ceil(shortfall / spacesPerBasement) : 0;
+  const basementMode: 'AUTO' | 'MANUAL' = scenario.basementMode ?? 'MANUAL';
+  const providedBasements = basementMode === 'AUTO' ? basementCountRequired : Math.max(0, scenario.basementCount);
+  const providedSpaces = surfaceParking + providedBasements * spacesPerBasement;
   const balance = providedSpaces - requiredSpaces;
-  const warnings = regulation.verificationStatus === 'VERIFIED' ? [] : ['Parking estimate based on assumption / المواقف تعتمد على قيمة استرشادية'];
-  if (scenario.surfaceParking === undefined && autoSurfaceParking > 0) warnings.push('Street parking is an unverified estimate and is excluded from supply until confirmed / المواقف السطحية التقديرية غير محتسبة إلا بعد التأكيد');
+  const warnings: string[] = [];
+  if (!developmentUse) warnings.push('Development use not defined for parking demand / نوع التطوير غير محدد لحساب المواقف');
+  else if (calculatedDemand === null && manualRequiredSpaces === null) warnings.push('Parking rule not defined for selected development use / لا توجد قاعدة مواقف لهذا الاستخدام');
+  if (manualRequiredSpaces !== null) warnings.push('Parking required spaces entered manually / عدد المواقف المطلوبة مدخل يدويًا');
+  if (scenario.surfaceParking === undefined && autoSurfaceParking > 0) warnings.push('Street spaces are estimated from frontage; deduct entrances and corners / مواقف الشوارع محسوبة من طول الواجهة؛ اخصم المداخل والزوايا');
+  if (streetSides.some((side) => side.layout === 'NOT_ALLOWED')) warnings.push('Streets narrower than 15 m are not counted for parking / الشوارع الأقل من 15م غير محتسبة للمواقف');
+  if (shortfall > 0 && spacesPerBasement === 0) warnings.push('Basement capacity cannot be calculated without a footprint / لا يمكن حساب سعة القبو بدون بصمة بناء');
   return {
-    requiredSpaces: hasParkingRule && canCalculateParking ? requiredSpaces : 0,
+    requiredSpaces: canCalculateParking ? requiredSpaces : 0,
     autoSurfaceParking,
     surfaceParkingMode: scenario.surfaceParking === undefined ? 'AUTO' : 'MANUAL',
     parkingLayout,
     spacesPerBasement,
     basementCountRequired,
-    providedBasements: scenario.basementCount,
+    providedBasements,
     surfaceParking,
     providedSpaces,
-    balance: hasParkingRule && canCalculateParking ? balance : 0,
-    effectiveCapacityRatio: hasParkingRule && requiredSpaces ? round(Math.min(1, providedSpaces / requiredSpaces)) : 1,
-    status: hasParkingRule && canCalculateParking ? providedSpaces >= requiredSpaces ? 'OK' : 'SHORTAGE' : 'ASSUMPTION',
-    warnings: manualRequiredSpaces !== null ? [...warnings, 'Parking required spaces entered manually'] : !developmentUse ? [...warnings, 'Development use not defined for parking demand'] : hasParkingRule && calculatedDemand !== null ? warnings : [...warnings, 'Parking rule not defined for selected development use']
+    balance: canCalculateParking ? balance : 0,
+    effectiveCapacityRatio: requiredSpaces ? round(Math.min(1, providedSpaces / requiredSpaces)) : 1,
+    status: canCalculateParking ? providedSpaces >= requiredSpaces ? 'OK' : 'SHORTAGE' : 'ASSUMPTION',
+    warnings,
+    streetSides,
+    basementMode,
+    demandBreakdown,
+    internalSpaces
   };
 };
 
@@ -293,23 +394,59 @@ const calculateIrr = (cashFlows: number[]) => {
 
 export const calculateFinancial = (scenario: Scenario, outputs: DevelopmentOutputs): FinancialResult => {
   const f: FinancialInputs = scenario.financial;
+  const mode = f.mode === 'RENT' ? 'RENT' : 'SALE';
   const landCost = round(scenario.plot.officialArea * f.landPrice);
   const constructionRate = f.structuralRate + f.finishingRate + f.mepRate;
   const constructionCost = round(outputs.gfa * constructionRate + outputs.basementArea * f.basementRate);
   const directCost = landCost + constructionCost;
+  const taxes = round(landCost * (f.rettPercent ?? 0) + constructionCost * (f.constructionVatPercent ?? 0));
+  const acquisitionCost = round(landCost * (f.brokeragePercent ?? 0) + (f.otherAcquisitionCost ?? 0));
+  const fixedSoftCosts = (f.designCost ?? 0) + (f.consultancyCost ?? 0) + (f.supervisionCost ?? 0) +
+    (f.permitsCost ?? 0) + (f.adminCost ?? 0) + (f.externalWorksCost ?? 0);
+  const months = 18;
+  if (mode === 'RENT') {
+    const occupancy = Math.min(1, Math.max(0, f.occupancyPercent ?? 0.9));
+    const annualGrossRent = round((outputs.sellableResidential * (f.rentResidential ?? 0) + outputs.sellableRetail * (f.rentRetail ?? 0) + outputs.sellableOffice * (f.rentOffice ?? 0)) * occupancy);
+    const annualNoi = round(annualGrossRent * (1 - Math.min(1, Math.max(0, f.opexPercent ?? 0))));
+    // Leasing and marketing are charged once, on the first year's rent.
+    const softCosts = round(acquisitionCost + fixedSoftCosts + taxes + constructionCost * f.contingencyPercent + annualGrossRent * (f.marketingPercent + f.salesCommissionPercent));
+    const totalCost = round(directCost + softCosts);
+    const capRate = f.capRate && f.capRate > 0 ? f.capRate : 0.08;
+    const exitValue = round(annualNoi / capRate);
+    const profit = round(exitValue - totalCost);
+    let cumulative = 0;
+    const monthlyCashFlow = Array.from({ length: months }, (_, index) => {
+      const cost = round(index === 0 ? landCost : (constructionCost + softCosts) / (months - 1));
+      cumulative = round(cumulative - cost);
+      return { month: index + 1, cost, revenue: 0, net: -cost, cumulative };
+    });
+    // Ten-year hold: build in years 1-2, collect NOI, sell at the cap-rate value in year 10.
+    const annual = [-landCost - (constructionCost + softCosts) * (11 / 17), -(constructionCost + softCosts) * (6 / 17) + annualNoi / 2, ...Array.from({ length: 7 }, () => annualNoi), annualNoi + exitValue];
+    return {
+      landCost, constructionCost, softCosts, totalCost,
+      revenue: exitValue, profit,
+      profitMargin: exitValue ? round(profit / exitValue) : 0,
+      roi: totalCost ? round(profit / totalCost) : 0,
+      monthlyCashFlow,
+      peakFunding: totalCost,
+      breakEvenMonth: null,
+      irr: calculateIrr(annual),
+      npv: round(annual.reduce((sum, cf, index) => sum + cf / Math.pow(1.1, index), 0)),
+      mode, taxes, annualGrossRent, annualNoi,
+      yieldOnCost: totalCost ? round(annualNoi / totalCost, 4) : 0,
+      paybackYears: annualNoi > 0 ? round(totalCost / annualNoi, 1) : null,
+      exitValue
+    };
+  }
   const revenue = round(
     outputs.sellableResidential * f.sellingPriceResidential +
     outputs.sellableRetail * f.sellingPriceRetail +
     outputs.sellableOffice * f.sellingPriceOffice
   );
-  const acquisitionCost = round(landCost * (f.brokeragePercent ?? 0) + (f.otherAcquisitionCost ?? 0));
-  const fixedSoftCosts = (f.designCost ?? 0) + (f.consultancyCost ?? 0) + (f.supervisionCost ?? 0) +
-    (f.permitsCost ?? 0) + (f.adminCost ?? 0) + (f.externalWorksCost ?? 0);
-  const softCosts = round(acquisitionCost + fixedSoftCosts + constructionCost * f.contingencyPercent +
+  const softCosts = round(acquisitionCost + fixedSoftCosts + taxes + constructionCost * f.contingencyPercent +
     revenue * (f.marketingPercent + f.salesCommissionPercent));
   const totalCost = round(directCost + softCosts);
   const profit = round(revenue - totalCost);
-  const months = 18;
   let cumulative = 0;
   const monthlyCashFlow = Array.from({ length: months }, (_, index) => {
     const month = index + 1;
@@ -333,51 +470,60 @@ export const calculateFinancial = (scenario: Scenario, outputs: DevelopmentOutpu
     peakFunding: round(Math.abs(Math.min(...monthlyCashFlow.map((r) => r.cumulative), 0))),
     breakEvenMonth: monthlyCashFlow.find((r) => r.cumulative >= 0)?.month ?? null,
     irr: (() => { const monthly = calculateIrr(cashFlows); return monthly === null ? null : Math.pow(1 + monthly, 12) - 1; })(),
-    npv: round(cashFlows.reduce((sum, cf, index) => sum + cf / Math.pow(1.1, index / 12), 0))
+    npv: round(cashFlows.reduce((sum, cf, index) => sum + cf / Math.pow(1.1, index / 12), 0)),
+    mode,
+    taxes
   };
 };
 
+/** Decision thresholds. Sale: return on total cost. Rent: net yield on total cost. */
+export const DECISION_THRESHOLDS = { saleProceed: 0.18, saleConditional: 0.1, rentProceed: 0.08, rentConditional: 0.06, rentWeak: 0.04 };
+
 export const decide = (financial: FinancialResult, parking: ParkingResult, envelope: DevelopmentEnvelope): DecisionResult => {
+  const T = DECISION_THRESHOLDS;
   if (envelope.regulatoryViolations.length) {
     return { status: 'NOT_RECOMMENDED', label: { ar: 'مخالفة تنظيمية', en: 'REGULATORY VIOLATION' }, reasons: envelope.regulatoryViolations.map((reason) => ({ ar: reason, en: reason })) };
   }
   if (parking.status === 'SHORTAGE') {
-    return { status: 'RECONSIDER', label: { ar: 'إعادة الدراسة', en: 'RECONSIDER' }, reasons: [{ ar: 'عجز المواقف يؤثر على قابلية التطوير العملية.', en: 'Parking shortfall reduces practical development capacity.' }] };
+    return { status: 'RECONSIDER', label: { ar: 'إعادة الدراسة', en: 'RECONSIDER' }, reasons: [{ ar: `عجز ${Math.abs(parking.balance)} موقف: زد الأقبية أو قلل عدد الوحدات.`, en: `Parking shortfall of ${Math.abs(parking.balance)} spaces.` }] };
   }
-  if (financial.roi >= 0.18 && parking.status === 'OK' && envelope.warnings.length === 0) {
-    return { status: 'PROCEED', label: { ar: 'المضي بالمشروع', en: 'PROCEED' }, reasons: [{ ar: 'العائد والمواقف ضمن نطاق مقبول.', en: 'Return and parking are within acceptable range.' }] };
+  const incomplete = envelope.farSource === 'NOT_DEFINED' || parking.status === 'ASSUMPTION';
+  const rent = financial.mode === 'RENT';
+  const measure = rent ? financial.yieldOnCost ?? 0 : financial.roi;
+  const strong = rent ? T.rentProceed : T.saleProceed;
+  const fair = rent ? T.rentConditional : T.saleConditional;
+  const weak = rent ? T.rentWeak : 0;
+  const pct = `${(measure * 100).toFixed(1)}%`;
+  const what = rent ? { ar: 'العائد الإيجاري على التكلفة', en: 'Yield on cost' } : { ar: 'العائد على التكلفة', en: 'Return on cost' };
+  if (measure >= strong && !incomplete) {
+    return { status: 'PROCEED', label: { ar: 'المضي بالمشروع', en: 'PROCEED' }, reasons: [{ ar: `${what.ar} ${pct} والمواقف مغطاة.`, en: `${what.en} ${pct}; parking is covered.` }] };
   }
-  if (financial.roi >= 0.1 && parking.status === 'OK') {
-    return { status: 'PROCEED_WITH_CONDITIONS', label: { ar: 'المضي بشروط', en: 'PROCEED WITH CONDITIONS' }, reasons: [{ ar: 'النتيجة إيجابية لكنها تتطلب تأكيد الافتراضات.', en: 'Positive result but assumptions need confirmation.' }] };
+  if (measure >= fair) {
+    return { status: 'PROCEED_WITH_CONDITIONS', label: { ar: 'المضي بشروط', en: 'PROCEED WITH CONDITIONS' }, reasons: [{ ar: incomplete ? `${what.ar} ${pct}، لكن بعض بيانات النظام أو المواقف ناقصة.` : `${what.ar} ${pct}: مقبول ويحتاج تأكيد الأسعار والتكاليف.`, en: `${what.en} ${pct}; confirm assumptions.` }] };
   }
-  if (financial.roi >= 0) {
-    return { status: 'RECONSIDER', label: { ar: 'إعادة الدراسة', en: 'RECONSIDER' }, reasons: [{ ar: 'العائد محدود أو توجد قيود تطويرية.', en: 'Return is limited or development constraints exist.' }] };
+  if (measure >= weak) {
+    return { status: 'RECONSIDER', label: { ar: 'إعادة الدراسة', en: 'RECONSIDER' }, reasons: [{ ar: `${what.ar} ${pct}: ضعيف. راجع سعر الأرض أو المنتج.`, en: `${what.en} ${pct} is weak.` }] };
   }
-  return { status: 'NOT_RECOMMENDED', label: { ar: 'غير موصى به', en: 'NOT RECOMMENDED' }, reasons: [{ ar: 'النتيجة المالية سالبة في السيناريو الحالي.', en: 'The current scenario is financially negative.' }] };
+  return { status: 'NOT_RECOMMENDED', label: { ar: 'غير موصى به', en: 'NOT RECOMMENDED' }, reasons: [{ ar: rent ? `${what.ar} ${pct}: أقل من الحد المقبول.` : 'التكلفة أعلى من الإيرادات في السيناريو الحالي.', en: rent ? `${what.en} ${pct} is below the acceptable level.` : 'The current scenario is financially negative.' }] };
 };
 
 export const runScenario = (scenario: Scenario, regulation: RegulationPack): ScenarioResult => {
   const envelope = calculateEnvelope(scenario, regulation);
   const outputs = calculateOutputs(scenario, envelope);
   const parking = calculateParking(scenario, regulation, outputs);
+  // In AUTO mode a basement exists only if street parking falls short, so its cost follows the parking result.
+  if (parking.basementMode === 'AUTO') outputs.basementArea = round(basementPlate(scenario, outputs.footprint) * parking.providedBasements);
   const financial = calculateFinancial(scenario, outputs);
   const mix = scenario.productMix;
   const mixTotal = mix.residentialShare + mix.retailShare + mix.officeShare;
   const mixInvalid = Math.abs(mixTotal - 1) > 0.001 || [mix.residentialShare, mix.retailShare, mix.officeShare].some((v) => v < 0 || v > 1);
   if (mixInvalid) envelope.warnings.push('Product mix shares must total 100% / مجموع نسب الاستخدامات يجب أن يساوي 100%');
-  let decision: DecisionResult = mixInvalid ? { status: 'RECONSIDER' as const, label: { ar: 'راجع نسب الاستخدامات', en: 'CHECK PRODUCT MIX' }, reasons: [{ ar: 'يجب ضبط مجموع نسب الاستخدامات إلى 100% قبل اتخاذ قرار الاستثمار.', en: 'Product mix must total 100% before relying on the investment decision.' }] } : decide(financial, parking, envelope);
-  if (!evidenceValid(scenario,regulation)) {
-    decision = { status:'RECONSIDER',label:{ar:'انطباق نظام البناء غير موثق',en:'REGULATION NOT ESTABLISHED'},reasons:[{ar:'يلزم تحديد الأرض وربط النظام بدليل انطباق على القطعة قبل اتخاذ قرار الاستثمار.',en:'Parcel-specific regulation applicability evidence is required before an investment decision.'}] };
-    envelope.warnings.push('Regulation applicability unverified for this parcel / لم يثبت انطباق نظام البناء على القطعة');
-  } else if (!isOfficiallyConfirmedForParcel(scenario,regulation)) {
-    decision = { status:'RECONSIDER',label:{ar:'دراسة مبدئية — يلزم تحقق رسمي',en:'PROVISIONAL - AUTHORITY CONFIRMATION REQUIRED'},reasons:[{ar:'تم توثيق سبب اختيار النظام من المستخدم فقط. لم يتحقق التطبيق من جهة رسمية من انطباقه على الأرض.',en:'The user documented the choice; official parcel applicability was not independently verified.'}] };
-    envelope.warnings.push('Documented by user only; official applicability not confirmed / توثيق مستخدم وليس تحققًا رسميًا');
-  }
+  const decision: DecisionResult = mixInvalid ? { status: 'RECONSIDER' as const, label: { ar: 'راجع نسب الاستخدامات', en: 'CHECK PRODUCT MIX' }, reasons: [{ ar: 'يجب ضبط مجموع نسب الاستخدامات إلى 100% قبل اتخاذ قرار الاستثمار.', en: 'Product mix must total 100% before relying on the investment decision.' }] } : decide(financial, parking, envelope);
   const insights = [
-    parking.status === 'SHORTAGE' ? 'Parking is the controlling development constraint' : `${envelope.unusedGfa} m2 of permitted GFA remains unused`,
+    parking.providedBasements > 0 ? `${parking.providedBasements} basement level(s) needed after street parking` : 'Street parking covers the demand without a basement',
     financial.profit < 0 ? 'Revenue does not cover development cost in this scenario' : `Estimated profit is ${financial.profit.toLocaleString()} SAR`
   ];
-  return { envelope, outputs, parking, financial, decision, insights };
+  return { envelope, outputs, parking, financial, decision, insights, regulationConfidence: regulationConfidence(scenario, regulation) };
 };
 
 export const createScenarioComparison = (scenarios: Scenario[], regulations: RegulationPack[]) => scenarios.map((scenario) => {

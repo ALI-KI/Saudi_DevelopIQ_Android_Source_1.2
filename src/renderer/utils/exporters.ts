@@ -133,10 +133,10 @@ export const exportExcel = async (project: ProjectRecord, regulations: Regulatio
     ['Assumption','Value','Source','Status','User Override'],
     ['Sellable Efficiency', scenario.financial.sellableEfficiencyResidential, 'Suggested Benchmark', 'Suggested', 'Editable'],
     ['Active Regulation Pack', regulation.code, regulation.sourceReference, regulation.verificationStatus, 'No'],
-    ['Parcel Applicability Confirmation', 'USER DOCUMENTED ONLY - NOT INDEPENDENTLY VERIFIED', scenario.regulationEvidence?.documentReference ?? 'NO EVIDENCE', scenario.regulationEvidence?.status ?? 'MISSING', 'No'],
-    ['Applicability Justification', scenario.regulationEvidence?.applicabilityReason ?? 'NOT DOCUMENTED', 'User evidence', 'Not official verification', 'No'],
-    ['Precedence / Conflict Resolution', scenario.regulationEvidence?.precedenceReason ?? 'NOT RESOLVED', 'User evidence', 'Not official verification', 'No'],
-    ['Applicability Reviewed By', scenario.regulationEvidence?.reviewer ?? 'NOT RECORDED', 'User provided', 'Not official verification', 'No']
+    ['Regulation Basis', result.regulationConfidence?.label.en ?? 'Not set', scenario.regulationEvidence?.documentReference || 'No Amanah document recorded', scenario.regulationEvidence?.mode ?? 'NONE', 'No'],
+    ['Amanah Document Date', scenario.regulationEvidence?.issueDate ?? 'Not recorded', 'Valid for one year from approval', result.regulationConfidence?.expired ? 'EXPIRED' : 'OK', 'No'],
+    ['Parking Basis', 'Apartments: 1 space up to 180 m2, 2 above. Street stalls 2.8 x 5.5 m', 'Perpendicular on 15-25 m streets, 45 degrees on 30 m+', 'Project rule', 'Editable'],
+    ['Financial Mode', result.financial.mode ?? 'SALE', 'Scenario input', 'User', 'Editable']
   ]);
   if (scenario.overrides.length) {
     assumptions.addRow([]);

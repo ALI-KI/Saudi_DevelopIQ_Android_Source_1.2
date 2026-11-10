@@ -38,6 +38,8 @@ export interface ProjectInfo {
   planNumber?: string;
   plotNumber?: string;
   deedNumber?: string;
+  blockNumber?: string;
+  subMunicipality?: string;
   use: ProjectUse;
   status: ProjectStatus;
   updatedAt: string;
@@ -93,6 +95,17 @@ export interface RegulationSelectionEvidence {
   recordedAt: string;
   /** Documented by the user, never a claim of authority verification. */
   status: 'USER_DOCUMENTED';
+  /** How the system was linked: automatic default, picked by the user, or backed by an Amanah document. */
+  mode?: 'AUTO' | 'USER_SELECTED' | 'DOCUMENTED';
+  /** Approval date printed on the Amanah "نظام البناء" document (valid for one year). */
+  issueDate?: string;
+  documentKind?: 'PRELIMINARY' | 'APPROVED';
+}
+
+export interface RegulationConfidence {
+  level: 'NONE' | 'AUTO' | 'USER_SELECTED' | 'DOCUMENTED';
+  label: LocalizedText;
+  expired: boolean;
 }
 
 export interface RegulationPack {
@@ -117,9 +130,11 @@ export interface RegulationPack {
   far: RegulationRule<number | null>;
   setbacks: RegulationRule<SetbackRules>;
   parking: RegulationRule<ParkingRule[]>;
-  setbackProfiles?: Partial<Record<'mainStreet' | 'secondaryStreet' | 'neighbor' | 'kingFahdRoad' | 'olayaStreet' | 'commercialStreet', SetbackValue>>;
+  setbackProfiles?: Partial<Record<'mainStreet' | 'secondaryStreet' | 'neighbor' | 'rearNeighbor' | 'kingFahdRoad' | 'olayaStreet' | 'commercialStreet', SetbackValue>>;
   floorAreaTypes?: FloorAreaTypeRule[];
   calculationReady?: boolean;
+  /** Ground-floor coverage includes annexes built inside the setbacks (villa rule), so geometry does not cap it. */
+  groundCoverageIncludesSetbackAnnexes?: boolean;
   developmentDepth?: RegulationRule<number | null>;
   developmentZones?: DevelopmentZoneRule[];
   definedRules?: string[];
@@ -171,6 +186,18 @@ export interface FinancialInputs {
   sellableEfficiencyResidential: number;
   sellableEfficiencyRetail: number;
   sellableEfficiencyOffice: number;
+  /** SALE (default) sells the units; RENT keeps them and measures yield on cost. */
+  mode?: 'SALE' | 'RENT';
+  /** Annual rent per leasable m2. */
+  rentResidential?: number;
+  rentRetail?: number;
+  rentOffice?: number;
+  occupancyPercent?: number;
+  opexPercent?: number;
+  capRate?: number;
+  /** Real-estate transaction tax on the land purchase and VAT on construction; zero until entered. */
+  rettPercent?: number;
+  constructionVatPercent?: number;
   marketingPercent: number;
   salesCommissionPercent: number;
   contingencyPercent: number;
@@ -191,6 +218,8 @@ export interface ProductMix {
   residentialShare: number;
   retailShare: number;
   officeShare: number;
+  /** Share of apartments larger than 180 m2 (two parking spaces each). Defaults from the average unit area. */
+  largeUnitShare?: number;
 }
 
 export interface Scenario {
@@ -203,6 +232,12 @@ export interface Scenario {
   productMix: ProductMix;
   developmentUse?: ProjectUse | 'Retail';
   basementCount: number;
+  /** AUTO: basements are added only when street parking does not cover demand. */
+  basementMode?: 'AUTO' | 'MANUAL';
+  /** Basement plate as a ratio of the plot area; defaults to the ground-floor footprint. */
+  basementCoverage?: number;
+  /** Street spaces lost to entrances, ramps and corners. */
+  streetParkingLostSpaces?: number;
   surfaceParking?: number;
   parkingEfficiencySqmPerSpace?: number;
   overrides: ManualOverride[];
@@ -280,9 +315,25 @@ export interface DevelopmentOutputs {
   sellableOffice: number;
   units: number;
   villas: number;
+  residentialGfa?: number;
+  retailGfa?: number;
+  officeGfa?: number;
+}
+
+export interface StreetParkingSide {
+  side: 'front' | 'right' | 'left' | 'rear';
+  streetWidth: number;
+  frontage: number;
+  layout: 'ANGLED_45' | 'PERPENDICULAR' | 'NOT_ALLOWED';
+  stallAlongCurb: number;
+  spaces: number;
 }
 
 export interface ParkingResult {
+  streetSides?: StreetParkingSide[];
+  basementMode?: 'AUTO' | 'MANUAL';
+  demandBreakdown?: { label: LocalizedText; spaces: number }[];
+  internalSpaces?: number;
   requiredSpaces: number;
   autoSurfaceParking: number;
   surfaceParkingMode: 'AUTO' | 'MANUAL';
@@ -312,6 +363,13 @@ export interface FinancialResult {
   breakEvenMonth: number | null;
   irr: number | null;
   npv: number;
+  mode?: 'SALE' | 'RENT';
+  taxes?: number;
+  annualGrossRent?: number;
+  annualNoi?: number;
+  yieldOnCost?: number;
+  paybackYears?: number | null;
+  exitValue?: number;
 }
 
 export interface CashFlowRow {
@@ -329,6 +387,7 @@ export interface ScenarioResult {
   financial: FinancialResult;
   decision: DecisionResult;
   insights: string[];
+  regulationConfidence?: RegulationConfidence;
 }
 
 export interface DecisionResult {
